@@ -118,8 +118,6 @@ jobs:
             mkdir -p dist
             cp target/${{ matrix.target }}/release/runmunch dist/runmunch-linux-arm64
           fi
-        env:
-          CROSS_RUN_BUILD_STD: "1"
 
       - name: Determine binary name
         id: binary_name
