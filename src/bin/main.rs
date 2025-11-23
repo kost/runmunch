@@ -5,7 +5,7 @@ use std::process;
 
 fn main() {
     let matches = Command::new("runmunch")
-        .version("0.1.0")
+        .version(env!("CARGO_PKG_VERSION"))
         .author("Vlatko Kosturjak")
         .about("A Rust implementation of hunspell's unmunch tool for expanding dictionary words using affix files")
         .arg(
