@@ -119,7 +119,6 @@ jobs:
             cp target/${{ matrix.target }}/release/runmunch dist/runmunch-linux-arm64
           fi
         env:
-          RUSTFLAGS: "-C target-feature=+crt-static -C link-arg=-static"
           CROSS_RUN_BUILD_STD: "1"
 
       - name: Determine binary name
