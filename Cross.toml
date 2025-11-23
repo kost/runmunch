@@ -3,5 +3,6 @@ passthrough = ["RUSTFLAGS"]
 
 [target.aarch64-unknown-linux-musl]
 image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5"
+build-std = ["std", "panic_abort"]
 
 
