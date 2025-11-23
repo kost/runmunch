@@ -114,7 +114,7 @@ jobs:
             make dist-linux-x64
           else
             # Use cross with specific Docker image that has compatible GLIBC
-            CROSS_CONTAINER_OPTS="--platform=linux/amd64" cross build --release --target ${{ matrix.target }}
+            cross build --release --target aarch64-unknown-linux-musl --image ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5
             mkdir -p dist
             cp target/${{ matrix.target }}/release/runmunch dist/runmunch-linux-arm64
           fi
