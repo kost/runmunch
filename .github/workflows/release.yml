@@ -1,0 +1,396 @@
+name: Release Builds
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Get version from tag
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          release_name: runmunch ${{ steps.get_version.outputs.version }}
+          draft: false
+          prerelease: false
+          body: |
+            # runmunch ${{ steps.get_version.outputs.version }}
+
+            Expand dictionary words using morphological affix rules in Rust
+
+            ## Installation
+
+            ### Linux/macOS/BSD
+            ```bash
+            # Download and make executable
+            chmod +x runmunch-*
+            sudo mv runmunch-* /usr/local/bin/runmunch
+
+            # Verify
+            runmunch --version
+            ```
+
+            ### Windows
+            ```powershell
+            # Run directly or add to PATH
+            .\runmunch-windows-x64.exe --version
+            ```
+
+  build-linux:
+    name: Build Linux
+    needs: create-release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+            sudo apt-get update
+            sudo apt-get install -y musl-tools
+          else
+            # Install cross for ARM64 musl cross-compilation
+            cargo install cross --git https://github.com/cross-rs/cross
+          fi
+
+      - name: Set up cargo cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+            ${{ runner.os }}-cargo-
+
+      - name: Build static binary
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+            make dist-linux-x64
+          else
+            # Use cross with specific Docker image that has compatible GLIBC
+            CROSS_CONTAINER_OPTS="--platform=linux/amd64" cross build --release --target ${{ matrix.target }}
+            mkdir -p dist
+            cp target/${{ matrix.target }}/release/runmunch dist/runmunch-linux-arm64
+          fi
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static -C link-arg=-static"
+          CROSS_RUN_BUILD_STD: "1"
+
+      - name: Determine binary name
+        id: binary_name
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+            echo "name=runmunch-linux-x64" >> $GITHUB_OUTPUT
+          else
+            echo "name=runmunch-linux-arm64" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verify static binary
+        run: |
+          file dist/${{ steps.binary_name.outputs.name }}
+          ldd dist/${{ steps.binary_name.outputs.name }} 2>&1 | grep -q "statically linked" || echo "Warning: Binary may not be fully static"
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./dist/${{ steps.binary_name.outputs.name }}
+          asset_name: ${{ steps.binary_name.outputs.name }}
+          asset_content_type: application/octet-stream
+
+  build-macos:
+    name: Build macOS
+    needs: create-release
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Set up cargo cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+            ${{ runner.os }}-cargo-
+
+      - name: Build binary
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-apple-darwin" ]; then
+            make dist-macos-x64
+          else
+            make dist-macos-arm64
+          fi
+
+      - name: Determine binary name
+        id: binary_name
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-apple-darwin" ]; then
+            echo "name=runmunch-macos-x64" >> $GITHUB_OUTPUT
+          else
+            echo "name=runmunch-macos-arm64" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./dist/${{ steps.binary_name.outputs.name }}
+          asset_name: ${{ steps.binary_name.outputs.name }}
+          asset_content_type: application/octet-stream
+
+  build-windows:
+    name: Build Windows
+    needs: create-release
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - i686-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Set up cargo cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+            ${{ runner.os }}-cargo-
+
+      - name: Build static binary
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          mkdir -p dist
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            cp target/${{ matrix.target }}/release/runmunch.exe dist/runmunch-windows-x64.exe
+          elif [ "${{ matrix.target }}" = "i686-pc-windows-msvc" ]; then
+            cp target/${{ matrix.target }}/release/runmunch.exe dist/runmunch-windows-x86.exe
+          else
+            cp target/${{ matrix.target }}/release/runmunch.exe dist/runmunch-windows-arm64.exe
+          fi
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
+
+      - name: Determine binary name
+        id: binary_name
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            echo "name=runmunch-windows-x64.exe" >> $GITHUB_OUTPUT
+          elif [ "${{ matrix.target }}" = "i686-pc-windows-msvc" ]; then
+            echo "name=runmunch-windows-x86.exe" >> $GITHUB_OUTPUT
+          else
+            echo "name=runmunch-windows-arm64.exe" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./dist/${{ steps.binary_name.outputs.name }}
+          asset_name: ${{ steps.binary_name.outputs.name }}
+          asset_content_type: application/octet-stream
+
+  build-freebsd:
+    name: Build FreeBSD
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build on FreeBSD
+        uses: cross-platform-actions/action@v0.25.0
+        continue-on-error: false
+        timeout-minutes: 30
+        env:
+          CARGO_TERM_COLOR: always
+        with:
+          operating_system: freebsd
+          version: '14.0'
+          shell: bash
+          sync_files: true
+          run: |
+            set -e
+            echo "Installing Rust..."
+            sudo pkg install -y rust
+            echo "Building runmunch..."
+            cargo build --release --verbose
+            echo "Build complete, creating dist directory..."
+            mkdir -p dist
+            cp target/release/runmunch dist/runmunch-freebsd-x64
+            ls -lh dist/runmunch-freebsd-x64
+            echo "Binary ready for upload"
+
+      - name: Verify binary exists
+        run: |
+          if [ ! -f ./dist/runmunch-freebsd-x64 ]; then
+            echo "Error: Binary not found!"
+            exit 1
+          fi
+          echo "Binary found, size: $(du -h ./dist/runmunch-freebsd-x64 | cut -f1)"
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./dist/runmunch-freebsd-x64
+          asset_name: runmunch-freebsd-x64
+          asset_content_type: application/octet-stream
+
+  build-netbsd:
+    name: Build NetBSD
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build on NetBSD
+        uses: cross-platform-actions/action@v0.25.0
+        continue-on-error: false
+        timeout-minutes: 30
+        env:
+          CARGO_TERM_COLOR: always
+        with:
+          operating_system: netbsd
+          version: '10.0'
+          shell: bash
+          sync_files: true
+          run: |
+            set -e
+            echo "Installing Rust and Cargo..."
+            sudo pkgin -y install rust
+            echo "Building runmunch..."
+            cargo build --release --verbose
+            echo "Build complete, creating dist directory..."
+            mkdir -p dist
+            cp target/release/runmunch dist/runmunch-netbsd-x64
+            ls -lh dist/runmunch-netbsd-x64
+            echo "Binary ready for upload"
+
+      - name: Verify binary exists
+        run: |
+          if [ ! -f ./dist/runmunch-netbsd-x64 ]; then
+            echo "Error: Binary not found!"
+            exit 1
+          fi
+          echo "Binary found, size: $(du -h ./dist/runmunch-netbsd-x64 | cut -f1)"
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./dist/runmunch-netbsd-x64
+          asset_name: runmunch-netbsd-x64
+          asset_content_type: application/octet-stream
+
+  publish-crate:
+    name: Publish to crates.io
+    needs: [build-linux, build-macos, build-windows, build-freebsd, build-netbsd]
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+      url: https://github.com/kost/runmunch/releases
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_TERM_COLOR: always
